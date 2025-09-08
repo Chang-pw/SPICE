@@ -1,0 +1,3 @@
+# Please install Llamafactory's code repository to perform SFT on the selected data
+
+# And the sft_data.sh is the config of our training yaml.

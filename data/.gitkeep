@@ -1,0 +1,4 @@
+# This file ensures the data directory is tracked by git
+# Place your training data files here
+
+# The sft_data.jsonl will be released in HF.
