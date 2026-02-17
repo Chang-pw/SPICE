@@ -1,53 +1,59 @@
+# =============================================================================
+# SPICE: Submodular Penalized Information-Conflict Selection
+# Default configuration for data selection and SFT training
+# =============================================================================
+
+# --- Model ---
 model_name: Qwen/Qwen2-0.5B
 use_lora: true
 lora:
-  r: 16
-  alpha: 32
+  r: 16                # LoRA rank
+  alpha: 32            # LoRA scaling factor (typically 2x rank)
   dropout: 0.05
   target_modules: [q_proj, k_proj, v_proj, o_proj, up_proj, down_proj, gate_proj]
 
-# Data
-dataset_name: null
-dataset_path: ./data/sft_data.jsonl
+# --- Data ---
+dataset_name: null                    # HuggingFace dataset name (mutually exclusive with dataset_path)
+dataset_path: ./data/sft_data.jsonl   # Local file path (JSON/JSONL/Parquet)
 split: train
-text_field_name: instruction
-label_field_name: response
+text_field_name: instruction          # Field name for the instruction/prompt
+label_field_name: response            # Field name for the response/label
 max_length: 2048
 
-# Selection
-alpha_fisher: 1.0
-pool_size: 128 
-select_k: 64
-drop_k: 128
-fisher_mode: diag  # diag | scalar
+# --- Selection ---
+alpha_fisher: 1.0       # Fisher information regularization coefficient
+pool_size: 128          # Number of candidate samples per selection step
+select_k: 64            # Number of samples to select from the pool (must be <= pool_size)
+drop_k: 128             # Reserved for future use
+fisher_mode: diag       # Fisher approximation mode: diag | scalar
 
 # Conflict handling
-selection_method: top_k  # conflict_penalty | top_k
-conflict_penalty: 0.1  # penalty for conflict
+selection_method: top_k       # Selection strategy: top_k | conflict_penalty
+conflict_penalty: 0.1         # Penalty weight for gradient conflicts (only used with conflict_penalty method)
 
-# Train
+# --- Training ---
 per_device_train_batch_size: 4
 gradient_accumulation_steps: 1
-update_frequency: 1  # update optimizer every n steps
+update_frequency: 1           # Accumulate selections for N steps before one optimizer update
 num_train_steps: 1000
 learning_rate: 2.0e-4
 weight_decay: 0.01
 warmup_ratio: 0.03
 logging_step_freq: 10
 
-# Gradient computation optimization
-use_batch_gradient_optimization: true  # use batch gradient optimization
-batch_gradient_size: 8  # batch size for batch gradient optimization
-use_gradient_projection: false  # use gradient projection
-gradient_projection_dim: 8192  # dimension of gradient projection
+# --- Gradient computation ---
+use_batch_gradient_optimization: true   # Batch gradient computation for better GPU utilization
+batch_gradient_size: 8                  # Sub-batch size for gradient computation
+use_gradient_projection: false          # Project gradients to lower dimension (saves memory)
+gradient_projection_dim: 8192           # Target dimension when projection is enabled
 
-# IO
+# --- I/O ---
 output_dir: ./outputs
 logging_dir: ./runs
 seed: 2026
 
-# Checkpoint
-save_checkpoint_freq: 100  # save checkpoint every n steps
-save_total_limit: 3  # save at most n checkpoints
-checkpoint_dir: ./checkpoints  # checkpoint directory
-resume_from_checkpoint: null  # resume from checkpoint (optional)
+# --- Checkpointing ---
+save_checkpoint_freq: 100
+save_total_limit: 3
+checkpoint_dir: ./checkpoints
+resume_from_checkpoint: null

@@ -1,22 +1,36 @@
 import os
-import math
 import glob
+import json
+import logging
+import shutil
+import time
 from typing import List, Dict, Any
+
 import torch
 from torch.optim import AdamW
 from transformers import get_linear_schedule_with_warmup
 from accelerate import Accelerator
 from tqdm import tqdm
-import json
-from pathlib import Path
-import time
 
 from spice.config import load_config
 from spice.models import load_model_and_tokenizer
-from spice.data import load_sft_dataset, collate_texts, sample_pool_indices, format_example
-from spice.adafisher import compute_per_sample_grads, compute_per_sample_grads_batch_optimized, compute_per_sample_grads_with_projection, compute_per_sample_grads_batch_optimized_with_projection, flatten_grad_vector, cosine_similarity
-from spice.select import greedy_select_with_metrics, greedy_select_with_conflict_penalty, compute_conflict_metrics, top_k_select, top_k_select_with_loss
+from spice.data import load_sft_dataset, collate_texts
+from spice.adafisher import (
+	compute_per_sample_grads,
+	compute_per_sample_grads_batch_optimized,
+	compute_per_sample_grads_with_projection,
+	compute_per_sample_grads_batch_optimized_with_projection,
+	cosine_similarity,
+)
+from spice.select import (
+	greedy_select_with_metrics,
+	greedy_select_with_conflict_penalty,
+	compute_conflict_metrics,
+	top_k_select,
+)
 from spice.metrics import log_step, LoggerAdapter
+
+logger = logging.getLogger(__name__)
 
 
 def _ddp_barrier():
@@ -60,7 +74,7 @@ def save_checkpoint(accelerator, model, optimizer, scheduler, global_step, epoch
 	with open(state_path, "w", encoding="utf-8") as f:
 		json.dump(training_state, f, indent=2, ensure_ascii=False)
 	
-	print(f"💾 Checkpoint saved: {checkpoint_path}")
+	logger.info("Checkpoint saved: %s", checkpoint_path)
 	
 	if torch.cuda.is_available():
 		torch.cuda.empty_cache()
@@ -70,9 +84,8 @@ def save_checkpoint(accelerator, model, optimizer, scheduler, global_step, epoch
 		checkpoints.sort(key=lambda x: int(x.split("-")[-1]), reverse=True)
 		
 		for checkpoint in checkpoints[save_total_limit:]:
-			import shutil
 			shutil.rmtree(checkpoint)
-			print(f"🗑️ Removed old checkpoint: {checkpoint}")
+			logger.info("Removed old checkpoint: %s", checkpoint)
 
 
 def load_checkpoint(accelerator, checkpoint_path: str):
@@ -96,6 +109,10 @@ def load_checkpoint(accelerator, checkpoint_path: str):
 
 
 def main():
+	logging.basicConfig(
+		format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+		level=logging.INFO,
+	)
 	cfg = load_config()
 	accelerator = Accelerator()
 	torch.manual_seed(cfg.seed)
@@ -108,7 +125,7 @@ def main():
 	model.to(device)
 	model.train()
 	if accelerator.is_main_process:
-		print("Model loaded successfully")
+		logger.info("Model loaded successfully")
 
 	# Load dataset
 	dataset = load_sft_dataset(cfg.dataset_name, cfg.dataset_path, cfg.split, cfg.text_field_name, cfg.label_field_name)
@@ -119,7 +136,7 @@ def main():
 		cfg.num_train_steps = int(steps_per_epoch * cfg.num_epochs)
 	
 	if accelerator.is_main_process:
-		print("Dataset loaded successfully")
+		logger.info("Dataset loaded successfully")
 
 	# Initialize training components
 	logger = LoggerAdapter(cfg.logger, cfg.logging_dir, cfg.project, cfg.run_name, accelerator.is_main_process)
@@ -220,7 +237,7 @@ def main():
 	
 	while global_step < cfg.num_train_steps:
 		if accelerator.is_main_process:
-			print(f"Step {global_step}")
+			logger.info("Step %d", global_step)
 		
 		# 1) Build candidate pool from sequential window
 		if accelerator.is_main_process:
@@ -243,7 +260,7 @@ def main():
 
 		# 2) Backward per-sample to get gradients (no step). Avoid DDP allreduce via no_sync
 		if accelerator.is_main_process:
-			print("Forward pass computing loss")
+			logger.info("Computing per-sample gradients")
 		
 		# All processes need to compute gradients, but only main process does data selection
 		if cfg.use_gradient_projection:
@@ -273,7 +290,7 @@ def main():
 				)
 		
 		if accelerator.is_main_process:
-			print("Backward pass computing sample gradients")
+			logger.debug("Per-sample gradients computed")
 
 		# 3) Data selection based on configuration
 		marginals_raw = None
@@ -318,7 +335,7 @@ def main():
 			selected_rel_raw = None
 
 		if accelerator.is_main_process:
-			print("Greedy data selection")
+			logger.debug("Data selection completed")
 		
 		# Calculate required metrics before deleting g_list
 		conf_kept = {"conflict_mean": 0.0, "conflict_ratio": 0.0, "avg_cosine": 0.0}
@@ -342,19 +359,8 @@ def main():
 			# Clean up intermediate tensors
 			del g_kept, g_mean_k, cos_k
 		
-		# Now safely delete g_list (if it exists)
-		if 'g_list' in locals():
-			del g_list
-		if 'g_list_f' in locals():
-			del g_list_f
-		if 'g_mean' in locals():
-			del g_mean
-		if 'cos' in locals():
-			del cos
-		if 'losses' in locals():
-			del losses
-		
-		# Clear GPU cache
+		# Free gradient memory before training step
+		del g_list
 		if torch.cuda.is_available():
 			torch.cuda.empty_cache()
 
@@ -396,7 +402,7 @@ def main():
 		last_kept = len(kept_rel)
 		
 		if accelerator.is_main_process:
-			print("Computing information metrics")
+			logger.debug("Computing information metrics")
 		
 		# Accumulate selected samples - all processes execute
 		current_batch_examples = []
@@ -414,7 +420,7 @@ def main():
 		selection_step += 1
 		
 		if accelerator.is_main_process:
-			print(f"Accumulated samples: {len(accumulated_examples)} (target: {update_frequency * cfg.select_k})")
+			logger.debug("Accumulated samples: %d (target: %d)", len(accumulated_examples), update_frequency * cfg.select_k)
 		
 		# Save selected data records
 		if accelerator.is_main_process and kept_rel:
@@ -450,7 +456,7 @@ def main():
 		
 		if should_update and len(accumulated_examples) > 0:
 			if accelerator.is_main_process:
-				print(f"Executing optimizer update with {len(accumulated_examples)} accumulated samples")
+				logger.info("Optimizer update with %d accumulated samples", len(accumulated_examples))
 			
 			# Use accumulated samples for optimizer update - efficient batch processing
 			zero_grad_fn()
@@ -513,13 +519,6 @@ def main():
 			# Clear accumulated samples
 			accumulated_examples = []
 			
-			del my_examples
-			if 'batch_examples' in locals():
-				del batch_examples
-			if 'loss_tensor' in locals():
-				del loss_tensor
-			
-			# Clear GPU cache
 			if torch.cuda.is_available():
 				torch.cuda.empty_cache()
 			
@@ -528,7 +527,7 @@ def main():
 				torch.distributed.barrier()
 			
 			if accelerator.is_main_process:
-				print("Optimizer update completed, clearing accumulated samples")
+				logger.debug("Optimizer update completed")
 		else:
 			# Default values when not updating
 			loss_sum = 0.0
@@ -651,7 +650,6 @@ def main():
 				"εmean": f"{(last_eps_mean if last_eps_mean is not None else 0):.4f}",
 			})
 			pbar.update(1)
-			print("Next step")
 
 		global_step += 1
 
@@ -661,7 +659,7 @@ def main():
 				if accelerator.is_main_process:
 					allocated = torch.cuda.memory_allocated() / 1024**3
 					reserved = torch.cuda.memory_reserved() / 1024**3
-					print(f"Step {global_step}: GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+					logger.info("Step %d: GPU Memory - Allocated: %.2fGB, Reserved: %.2fGB", global_step, allocated, reserved)
 
 	# Save final checkpoint
 	if accelerator.is_main_process and cfg.save_checkpoint_freq > 0:
@@ -670,13 +668,13 @@ def main():
 
 	if accelerator.is_main_process:
 		pbar.close()
-		print("Training completed")
+		logger.info("Training completed")
 		
 		total_time = float(time.time() - start_time)
 		steps_per_sec = float(global_step / total_time) if total_time > 0 else 0.0
 		# Output average number of selected samples per step (average k) at training end
 		avg_k = float(selection_stats["total_selected"]) / float(max(1, selection_step))
-		print(f"Average samples selected per step k̄ = {avg_k:.2f} (selection steps: {selection_step})")
+		logger.info("Average samples selected per step: %.2f (selection steps: %d)", avg_k, selection_step)
 		
 		log_step(logger, train_step, {
 			"train/total_time_sec": total_time,

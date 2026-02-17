@@ -178,4 +178,31 @@ def load_config() -> TrainConfig:
 	if isinstance(cfg_dict.get("target_modules"), str):
 		cfg_dict["target_modules"] = [m.strip() for m in cfg_dict["target_modules"].split(",") if m.strip()]
 
-	return TrainConfig(**cfg_dict)
+	config = TrainConfig(**cfg_dict)
+	_validate_config(config)
+	return config
+
+
+def _validate_config(cfg: TrainConfig) -> None:
+	"""Validate configuration values and raise on obvious misconfigurations."""
+	if cfg.select_k > cfg.pool_size:
+		raise ValueError(
+			f"select_k ({cfg.select_k}) must be <= pool_size ({cfg.pool_size})"
+		)
+	if cfg.learning_rate <= 0:
+		raise ValueError(f"learning_rate must be positive, got {cfg.learning_rate}")
+	if cfg.pool_size <= 0:
+		raise ValueError(f"pool_size must be positive, got {cfg.pool_size}")
+	if cfg.select_k <= 0:
+		raise ValueError(f"select_k must be positive, got {cfg.select_k}")
+	if cfg.alpha_fisher < 0:
+		raise ValueError(f"alpha_fisher must be non-negative, got {cfg.alpha_fisher}")
+	if cfg.selection_method not in ("conflict_penalty", "top_k"):
+		raise ValueError(
+			f"Unknown selection_method '{cfg.selection_method}'. "
+			f"Supported: conflict_penalty, top_k"
+		)
+	if cfg.fisher_mode not in ("diag", "scalar"):
+		raise ValueError(
+			f"Unknown fisher_mode '{cfg.fisher_mode}'. Supported: diag, scalar"
+		)

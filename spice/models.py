@@ -1,4 +1,6 @@
 from typing import List, Optional, Tuple
+import os
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model
 import torch
@@ -6,6 +8,7 @@ import torch
 
 def load_model_and_tokenizer(model_name: str, use_lora: bool, lora_r: int, lora_alpha: int, lora_dropout: float,
 							target_modules: Optional[List[str]] = None) -> Tuple[torch.nn.Module, AutoTokenizer]:
+	"""Load a causal LM and tokenizer, optionally wrapping with LoRA."""
 	tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 	if tokenizer.pad_token is None:
 		tokenizer.pad_token = tokenizer.eos_token
@@ -14,7 +17,6 @@ def load_model_and_tokenizer(model_name: str, use_lora: bool, lora_r: int, lora_
 	torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 	
 	# Check if it is a distributed environment
-	import os
 	is_distributed = (
 		os.environ.get("WORLD_SIZE") is not None and 
 		os.environ.get("LOCAL_RANK") is not None and

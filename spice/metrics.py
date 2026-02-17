@@ -1,8 +1,10 @@
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 import torch
 
 
 class LoggerAdapter:
+	"""Unified logging adapter supporting TensorBoard and SwanLab backends."""
+
 	def __init__(self, kind: str, logdir: Optional[str], project: Optional[str], run_name: Optional[str], is_main: bool):
 		self.kind = kind
 		self.is_main = is_main

@@ -3,12 +3,14 @@ import torch
 
 
 def iter_trainable_params(model: torch.nn.Module):
+	"""Yield trainable parameters that have computed gradients."""
 	for p in model.parameters():
 		if p.requires_grad and p.grad is not None:
 			yield p
 
 
 def flatten_grad_vector(model: torch.nn.Module) -> torch.Tensor:
+	"""Flatten all trainable gradients into a single 1-D vector."""
 	grads = []
 	for p in model.parameters():
 		if p.requires_grad and p.grad is not None:
@@ -26,6 +28,7 @@ def compute_per_sample_grads(
 	device: torch.device,
 	no_sync_ctx: Optional[Callable[[torch.nn.Module], torch.cuda.amp.autocast]] = None,
 ) -> List[torch.Tensor]:
+	"""Compute per-sample gradient vectors sequentially (one forward-backward per sample)."""
 	g_list: List[torch.Tensor] = []
 	for ex in batch_examples:
 		zero_grad_fn()
@@ -123,161 +126,23 @@ def compute_per_sample_grads_batch_optimized(
 	return g_list
 
 
-def compute_per_sample_grads_true_batch(
-	model: torch.nn.Module,
-	batch_examples: List[dict],
-	forward_fn,
-	zero_grad_fn,
-	device: torch.device,
-	no_sync_ctx: Optional[Callable[[torch.nn.Module], torch.cuda.amp.autocast]] = None,
-	batch_size: int = 8,  # Internal batch size
-) -> List[torch.Tensor]:
-	"""
-	True batch gradient computation (most efficient version)
-	
-	This method attempts to use true batch forward propagation, then obtain gradients for each sample through gradient separation.
-	Note: This requires forward_fn to support batch input.
-	"""
-	g_list: List[torch.Tensor] = []
-	
-	# Process samples in batches
-	for i in range(0, len(batch_examples), batch_size):
-		batch = batch_examples[i:i + batch_size]
-		
-		if len(batch) == 1:
-			# Single sample, use original method
-			zero_grad_fn()
-			if no_sync_ctx is not None:
-				with no_sync_ctx(model):
-					loss = forward_fn(batch)
-					loss.backward()
-			else:
-				loss = forward_fn(batch)
-				loss.backward()
-			g_vec = flatten_grad_vector(model)
-			g_list.append(g_vec)
-			zero_grad_fn()
-		else:
-			# Try true batch processing
-			try:
-				zero_grad_fn()
-				
-				# Try batch forward propagation
-				if no_sync_ctx is not None:
-					with no_sync_ctx(model):
-						batch_loss = forward_fn(batch)
-				else:
-					batch_loss = forward_fn(batch)
-				
-				# If forward_fn supports batch input, batch_loss should be a scalar
-				# We need to separate each sample's contribution
-				if hasattr(batch_loss, 'backward'):
-					# Standard case: use retain_graph method
-					losses = []
-					for ex in batch:
-						if no_sync_ctx is not None:
-							with no_sync_ctx(model):
-								loss = forward_fn([ex])
-						else:
-							loss = forward_fn([ex])
-						losses.append(loss)
-					
-					for j, loss in enumerate(losses):
-						loss.backward(retain_graph=(j < len(losses) - 1))
-						g_vec = flatten_grad_vector(model)
-						g_list.append(g_vec)
-						if j < len(losses) - 1:
-							zero_grad_fn()
-					zero_grad_fn()
-				else:
-					# If batch_loss is not a scalar, fall back to per-sample method
-					for ex in batch:
-						zero_grad_fn()
-						if no_sync_ctx is not None:
-							with no_sync_ctx(model):
-								loss = forward_fn([ex])
-								loss.backward()
-						else:
-							loss = forward_fn([ex])
-							loss.backward()
-						g_vec = flatten_grad_vector(model)
-						g_list.append(g_vec)
-						zero_grad_fn()
-						
-			except Exception as e:
-				# If batch processing fails, fall back to per-sample method
-				print(f"Warning: Batch processing failed, falling back to per-sample: {e}")
-				for ex in batch:
-					zero_grad_fn()
-					if no_sync_ctx is not None:
-						with no_sync_ctx(model):
-							loss = forward_fn([ex])
-							loss.backward()
-					else:
-						loss = forward_fn([ex])
-						loss.backward()
-					g_vec = flatten_grad_vector(model)
-					g_list.append(g_vec)
-					zero_grad_fn()
-	
-	return g_list
-
-
-def compute_per_sample_grads_memory_efficient(
-	model: torch.nn.Module,
-	batch_examples: List[dict],
-	forward_fn,
-	zero_grad_fn,
-	device: torch.device,
-	no_sync_ctx: Optional[Callable[[torch.nn.Module], torch.cuda.amp.autocast]] = None,
-) -> List[torch.Tensor]:
-	"""
-	Memory-efficient per-sample gradient computation (original method, but optimized for memory usage)
-	"""
-	g_list: List[torch.Tensor] = []
-	
-	for ex in batch_examples:
-		zero_grad_fn()
-		
-		# Use torch.no_grad() to reduce memory usage
-		with torch.set_grad_enabled(True):
-			if no_sync_ctx is not None:
-				with no_sync_ctx(model):
-					loss = forward_fn([ex])
-					loss.backward()
-			else:
-				loss = forward_fn([ex])
-				loss.backward()
-		
-		# Immediately extract and release gradients
-		g_vec = flatten_grad_vector(model)
-		g_list.append(g_vec)
-		
-		# Ensure gradients are zeroed
-		zero_grad_fn()
-		
-		# Clear cache (optional, use when GPU memory is tight)
-		if torch.cuda.is_available():
-			torch.cuda.empty_cache()
-	
-	return g_list
-
-
 def adafisher_h_vector(g_vec: torch.Tensor) -> torch.Tensor:
+	"""Compute the AdaFisher diagonal element: h = |g| * g."""
 	return g_vec.abs() * g_vec
 
 
 def greedy_scores_diag(g_vec: torch.Tensor, diag_den: torch.Tensor, alpha: float) -> torch.Tensor:
-	# score ~ g^T (I + alpha * diag(sum h^2))^{-1} g = sum_j g_j^2 / diag_den_j
+	"""Compute greedy score under diagonal Fisher approximation: sum_j g_j^2 / den_j."""
 	return (g_vec * g_vec / diag_den).sum()
 
 
 def update_diag_den(diag_den: torch.Tensor, h_vec: torch.Tensor, alpha: float) -> torch.Tensor:
-	# diag_den <- diag_den + alpha * h^2, starting from ones
+	"""Update diagonal denominator: den <- den + alpha * h^2."""
 	return diag_den + alpha * (h_vec * h_vec)
 
 
 def cosine_similarity(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-8) -> float:
+	"""Compute cosine similarity between two 1-D tensors."""
 	num = torch.dot(a, b).item()
 	den = (a.norm() * b.norm()).item() + eps
 	return float(num / den)

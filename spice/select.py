@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 import torch
 import math
 from .adafisher import adafisher_h_vector, greedy_scores_diag, update_diag_den, cosine_similarity
@@ -10,7 +10,7 @@ def greedy_select_with_metrics(
 	select_k: int,
 	fisher_mode: str = "diag",
 	halflife_threshold: float = None,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
 	"""
 	Original greedy selection method (only for delta sequences comparison)
 	
@@ -87,7 +87,7 @@ def greedy_select_with_conflict_penalty(
 	select_k: int,
 	conflict_penalty: float = 0.1,
 	fisher_mode: str = "diag",
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
 	"""
 	Greedy selection method with conflict penalty
 	
@@ -185,7 +185,7 @@ def top_k_select(
 	select_k: int,
 	fisher_mode: str = "diag",
 	halflife_threshold: float = None,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
 	"""
 	Simplified top-k selection method (no iteration, directly select the top k samples with the largest target function value)
 	
